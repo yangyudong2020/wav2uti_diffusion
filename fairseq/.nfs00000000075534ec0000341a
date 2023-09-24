@@ -1,0 +1,226 @@
+# -*- coding: utf-8 -*-
+import os
+import cv2
+import torch
+from torch.utils.data import Dataset
+from torchvision import transforms
+from transformers import BertTokenizer, BertModel
+import time
+import torchvision.transforms.functional as TF
+from PIL import Image
+import torch.nn.functional as F
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader, random_split
+from torchvision import transforms, datasets
+from imagen_pytorch import Unet, Imagen, ImagenTrainer
+from torchvision import transforms
+import imageio
+from imagen_pytorch import Unet3D, ElucidatedImagen, ImagenTrainer
+import torch.nn as nn
+import librosa
+import torch
+import numpy as np
+import soundfile as sf
+import fairseq
+from torch.utils.data import IterableDataset
+import logging
+
+# 将Hugging Face库的日志级别设置为WARNING或更高级别
+logging.getLogger("transformers").setLevel(logging.WARNING)
+
+MAX_FRAME = 15
+
+cp_path = 'xlsr_53_56k.pt'
+wav2vec_model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
+wav2vec_model = wav2vec_model[0]
+for param in wav2vec_model.parameters():
+    param.requires_grad = False  # Disable gradient tracking
+wav2vec_model = wav2vec_model.to(torch.float)  # Convert the model's weights to float
+wav2vec_model.eval()
+
+
+class CustomDataset(Dataset):
+    def __init__(self, root_dir):
+        super().__init__()
+        self.root_dir = root_dir
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((112, 112)),
+        ])
+        self.file_list = self._get_file_list()
+
+    def _get_file_list(self):
+        file_list = []
+        for root, dirs, files in os.walk(self.root_dir):
+            for file in files:
+                if file.endswith('.avi'):
+                    file_path = os.path.join(root, file)
+                    file_list.append(file_path)
+        return file_list
+
+    def __len__(self):
+        return len(self.file_list)
+
+    def __getitem__(self, index):
+        file_path = self.file_list[index]
+        video_frames = self.read_video_frames(file_path)
+        input_ids = None
+
+        file_name = file_path.split("/")[-1].split(".")[0]
+        text_path = '/mnt/shareEEx/yangyudong/utlnet/video-pytorch/val_test/txt/' + file_name + '.txt'
+        if text_path.endswith('.txt'):
+            with open(text_path, 'r', encoding='gbk') as file:
+                content = file.read().strip()
+            # 加载音频文件
+            audio_file = '/mnt/shareEEx/yangyudong/utlnet/video-pytorch/val_test/wav/' + file_name + '.wav'
+            audio, sample_rate = librosa.load(audio_file, sr=None)  # sr=None 保持原始采样率
+            audio_input_tensor = torch.tensor(audio, dtype=torch.float).unsqueeze(0)  # Convert input to float
+            wav2vec_output = wav2vec_model.feature_extractor(audio_input_tensor)
+            wav2vec_output_adjusted = wav2vec_output.transpose(1, 2).detach()
+
+            input_ids = torch.mean(wav2vec_output_adjusted, dim=1)  # Shape: (batch_size, hidden_size/feature_dim)
+
+        if input_ids is None:
+            input_ids = torch.empty(0)  # Set to empty PyTorch tensor
+        input_ids = input_ids.to(torch.float32)
+
+        return video_frames, input_ids, str(file_name + '.txt')
+
+    def read_video_frames(self, file_path):
+        cap = cv2.VideoCapture(file_path)
+        frames = []
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = Image.fromarray(frame)
+                frame = self.transform(frame)
+                frames.append(frame)
+            else:
+                break
+        cap.release()
+
+        if len(frames) == 0:
+            print(f"error {file_path}")
+
+        # Check if frames length exceeds the maximum limit
+        if len(frames) > MAX_FRAME:
+            frames = frames[:MAX_FRAME]  # Truncate frames to the maximum limit
+
+        # Find the maximum length of frames
+        max_length = max([frame.shape[0] for frame in frames])
+
+        # Pad frames to the maximum length
+        padded_frames = []
+        for frame in frames:
+            padding = max_length - frame.shape[0]
+            padded_frame = F.pad(frame, (0, 0, 0, padding))
+            padded_frames.append(padded_frame)
+
+        # Perform additional padding if necessary to reach the maximum limit
+        if len(padded_frames) < MAX_FRAME:
+            padding = MAX_FRAME - len(padded_frames)
+            padded_frames.extend([torch.zeros_like(padded_frames[0]) for _ in range(padding)])
+
+        video_frames = torch.stack(padded_frames)
+        video_frames = video_frames.permute(1, 0, 2, 3)  # Adjust the dimensions
+        return video_frames
+
+
+
+
+root_dir = "/mnt/shareEEx/yangyudong/utlnet/video-pytorch/val_test/video"
+
+dataset = CustomDataset(root_dir)
+
+print(dataset[0][0].shape, dataset[0][0].dtype, dataset[0][1].dtype, dataset[0][1].shape)
+
+experiment_path = os.path.join("/mnt/shareEEx/yangyudong/utlnet/video-pytorch/experiments", "conditional_video_utl_diffusion")
+images_path = os.path.join(experiment_path, "video_output")
+os.makedirs(images_path, exist_ok=True)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# 加载音频文件
+audio_file = '/mnt/shareEEx/yangyudong/utlnet/video-pytorch/wavDir/speaker00012_M_s1_stn00096.wav'
+audio, sr = librosa.load(audio_file, sr=None)  # sr=None 保持原始采样率
+audio_input_tensor = torch.tensor(audio, dtype=torch.float).unsqueeze(0)  # Convert input to float
+wav2vec_output = wav2vec_model.feature_extractor(audio_input_tensor)
+wav2vec_output_adjusted = wav2vec_output.transpose(1, 2)
+
+output_features = torch.mean(wav2vec_output_adjusted, dim=1)  # Shape: (batch_size, hidden_size/feature_dim)
+
+emb_test = output_features
+
+unet1 = Unet3D(dim=128,
+               dim_mults=(1, 2, 4),
+               max_text_len=1,
+               num_resnet_blocks=2,
+               layer_attns=False,  # type: ignore
+               layer_cross_attns=(False, False, True),  # type: ignore
+               ).cuda()
+
+
+imagen = ElucidatedImagen(
+    unets=unet1,
+    image_sizes=64,
+    text_embed_dim=512,
+    random_crop_sizes=None,
+    temporal_downsample_factor=1,
+    # in this example, the first unet would receive the video temporally downsampled by 2x
+    num_sample_steps=256,
+    cond_drop_prob=0.1,
+    sigma_min=0.002,  # min noise level
+    sigma_max=160,  # max noise level, double the max noise level for upsampler
+    sigma_data=0.25,  # standard deviation of data distribution
+    rho=7,  # controls the sampling schedule
+    P_mean=-1.2,  # mean of log-normal distribution from which noise is drawn for training
+    P_std=1.2,  # standard deviation of log-normal distribution from which noise is drawn for training
+    S_churn=80,  # parameters for stochastic sampling - depends on dataset, Table 5 in apper
+    S_tmin=0.05,
+    S_tmax=50,
+    S_noise=1.003,
+).cuda()
+
+trainer = ImagenTrainer(imagen).to(device)
+
+trainer.load(
+    "/mnt/shareEEx/yangyudong/utlnet/video-pytorch/experiments/conditional_video_utl_diffusion/utl_net_sp_112_out_300000.pt")
+
+# 创建保存GIF文件的文件夹
+output_folder = "output_sp_112"
+os.makedirs(output_folder, exist_ok=True)
+
+# 遍历测试数据集中的每个样本
+for idx, sample in enumerate(dataset):
+   
+    # 获取文本嵌入和视频帧
+   # print(sample[0].shape, sample[1].shape)
+    if 0 < idx <= 150:
+        print(f"infer_sp_96_30000_the {idx} and {sample[2]}----")
+        text_embeds = sample[1]
+        #print(text_embeds.unsqueeze(1).shape)
+        # 进行推理
+        videos = trainer.sample(text_embeds=text_embeds.unsqueeze(1), video_frames=MAX_FRAME, cond_scale=3.)
+  
+        # 创建一个空的图像列表，用于保存推理的结果
+        images = []
+    
+        # 提取推理结果中的每一帧
+        for frame_idx in range(videos.shape[2]):
+            frame_tensor = videos[:, :, frame_idx, :, :].squeeze()
+            frame_array = frame_tensor.permute(1, 2, 0).cpu().numpy()
+            frame_image = Image.fromarray((frame_array * 255).astype('uint8'), mode='RGB')
+            images.append(frame_image)
+    
+        # 保存推理结果为GIF动画
+        filenames = sample[2].split(".")[0]
+        output_filename = os.path.join(output_folder, f'gif_output_{filenames}.gif')
+        print(f"{output_filename} ok!")
+        imageio.mimsave(output_filename, images, duration=0.1)
+
+print("Done!")
+
+
+
