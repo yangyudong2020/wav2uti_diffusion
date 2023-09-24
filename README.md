@@ -20,7 +20,7 @@ The data collection has undergone ethical review and obtained informed consent f
 
 Sample：
 
-![image-20230915155021826](C:\Users\杨毓栋\AppData\Roaming\Typora\typora-user-images\image-20230915155021826.png)
+![image-20230915155021826](assets/image-20230915155021826.png)
 
 
 
