@@ -57,18 +57,18 @@ Dataset
 │   │   │   ...
 ```
 
-我们将在审稿结束后公开我们的全部推理方法与训练过程，目前提供测试流程
+We will publicly release our complete inference methods and training process after the review is completed. Currently, we are providing the testing process.
 
 ```shell
 pip install -r requestments.txt
 ./ init.sh
 ```
 
-准备您的预训练权重代码，我们遵循Bert和Wav2Vec2.0的设定，它们的huggingface🤗在这里：[Wav2Vec2.0](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn) and [Bert](https://huggingface.co/bert-base-chinese)
+Prepare your pre-trained weight code. We follow the setups of Bert and Wav2Vec2.0, available on Hugging Face 🤗 here: [Wav2Vec2.0](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn) and [Bert](https://huggingface.co/bert-base-chinese).
 
-我们需要使用这两个预训练权重，并进行个性化语音信息与普适性语音信息的提取
+We need to use these two pre-trained weights and extract personalized speech information and universal speech information.
 
-进行后续训练需要需要传递如下参数：
+To proceed with the subsequent training, the following parameters need to be passed:
 
 | Config             | Is_True?            |
 | ------------------ | ------------------- |
@@ -87,7 +87,7 @@ pip install -r requestments.txt
 | Stmax              | False defalut 50    |
 | Snoise             | False defalut 1.003 |
 
-测试代码使用：
+Test：
 
 ```shell
 python infer.py --dataset_path=path --image_sizes=112 --embed_dim=256 --num_sample_steps=16
@@ -132,16 +132,6 @@ python src/scripts/calc_metrics_for_dataset.py --real_data_path path/to/images/r
 ```
 
 
-
-## Result
-
-
-
-
-
-
-
-## 
 
 ## Citation
 
